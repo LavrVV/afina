@@ -1,0 +1,10 @@
+//-----------------------
+	size_t realcurr = 0;
+	for (auto i : _backend){
+		realcurr += i.first.size() + i.second.size();
+	}
+	if(_curr_size != realcurr){
+		std::string err = "wrong count: " +  std::to_string(_curr_size) + " " + std::to_string(realcurr);
+		throw std::underflow_error(err);
+	}
+	//---------------------------------

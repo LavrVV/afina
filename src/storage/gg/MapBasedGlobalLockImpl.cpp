@@ -7,15 +7,13 @@ namespace Backend {
 
 // See MapBasedGlobalLockImpl.h
 bool MapBasedGlobalLockImpl::Put(const std::string &key, const std::string &value) {
-	std::lock_guard<std::mutex> lock(_mutex);
-
 	size_t record_size = key.size() + value.size();
 	if(record_size > _max_size)
 		return false;
 	auto exists = _backend.find(key);
 	if(exists == _backend.end()){
 		_curr_size += record_size;
-		
+
 		_priority.push_front(key);
 		DeleteOldData(key);
 
@@ -25,7 +23,6 @@ bool MapBasedGlobalLockImpl::Put(const std::string &key, const std::string &valu
 			//wtf
 			throw std::underflow_error("in priority exist but int backend not");
 		}
-
 	} else {
 		_curr_size -= exists->second.size();
 		_curr_size += value.size();
@@ -35,15 +32,12 @@ bool MapBasedGlobalLockImpl::Put(const std::string &key, const std::string &valu
 		DeleteOldData(key);
 
 		exists->second = value;
-
 	}
 	return true; 
 }
 
 // See MapBasedGlobalLockImpl.h
 bool MapBasedGlobalLockImpl::PutIfAbsent(const std::string &key, const std::string &value) { 
-	std::lock_guard<std::mutex> lock(_mutex);
-
 	size_t record_size = key.size() + value.size();
 	if(record_size > _max_size)
 		return false;
@@ -61,15 +55,12 @@ bool MapBasedGlobalLockImpl::PutIfAbsent(const std::string &key, const std::stri
 		_curr_size -= record_size;
 		//wtf
 		throw std::underflow_error("in priority exist but int backend not");
-	}
-
+	}	
 	return inserted.second;
 }
 
 // See MapBasedGlobalLockImpl.h
 bool MapBasedGlobalLockImpl::Set(const std::string &key, const std::string &value) {
-	std::lock_guard<std::mutex> lock(_mutex);
-
 	auto position = _backend.find(key); 
 	if(position != _backend.end()){
 		_curr_size -= position->second.size();
@@ -80,7 +71,6 @@ bool MapBasedGlobalLockImpl::Set(const std::string &key, const std::string &valu
 		DeleteOldData(key); 
 
 		position->second = value;
-
 		return true;
 	} else {
 		return false;
@@ -89,8 +79,6 @@ bool MapBasedGlobalLockImpl::Set(const std::string &key, const std::string &valu
 
 // See MapBasedGlobalLockImpl.h
 bool MapBasedGlobalLockImpl::Delete(const std::string &key) {
-	std::lock_guard<std::mutex> lock(_mutex);
-
 	auto position = _backend.find(key); 
 	if(position != _backend.end()){
 		_curr_size -= position->second.size() + key.size();
@@ -106,8 +94,6 @@ bool MapBasedGlobalLockImpl::Delete(const std::string &key) {
 
 // See MapBasedGlobalLockImpl.h
 bool MapBasedGlobalLockImpl::Get(const std::string &key, std::string &value) const {
-	//std::lock_guard<std::mutex> lock(_mutex);
-
 	auto position = _backend.find(key); 
 	if(position != _backend.end()){
 
@@ -136,7 +122,7 @@ void MapBasedGlobalLockImpl::DeleteOldData(const std::string &key){
 			size_t record_size = _priority.back().size() + exists->second.size();
 			_curr_size -= record_size;
 			
-			//_backend.erase(_priority.back());
+			_backend.erase(_priority.back());
 			_priority.pop_back();
 			
 		}else{

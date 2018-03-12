@@ -5,7 +5,6 @@
 #include <mutex>
 #include <string>
 #include <list>
-#include <mutex>
 #include <afina/Storage.h>
 
 namespace Afina {
@@ -43,7 +42,6 @@ private:
 	size_t _curr_size;
     std::map<std::string, std::string> _backend;
 	mutable std::list<std::string> _priority;
-	std::mutex _mutex;
 };
 
 } // namespace Backend
