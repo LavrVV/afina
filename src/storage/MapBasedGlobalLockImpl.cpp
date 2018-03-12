@@ -136,7 +136,7 @@ void MapBasedGlobalLockImpl::DeleteOldData(const std::string &key){
 			size_t record_size = _priority.back().size() + exists->second.size();
 			_curr_size -= record_size;
 			
-			//_backend.erase(_priority.back());
+			_backend.erase(_priority.back());
 			_priority.pop_back();
 			
 		}else{
