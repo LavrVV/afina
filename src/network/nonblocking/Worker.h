@@ -2,6 +2,7 @@
 #define AFINA_NETWORK_NONBLOCKING_WORKER_H
 
 #include <memory>
+#include <atomic>
 #include <pthread.h>
 
 namespace Afina {
@@ -47,9 +48,13 @@ protected:
     /**
      * Method executing by background thread
      */
-    void OnRun(void *args);
+    void OnRun(int *args);
+    static void Clean(void* args);
+
 
 private:
+	std::atomic<bool> isRunning;
+	std::shared_ptr<Afina::Storage> ps;
     pthread_t thread;
 };
 

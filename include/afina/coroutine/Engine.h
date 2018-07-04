@@ -58,6 +58,8 @@ private:
      * Context to be returned finally
      */
     context *idle_ctx;
+    
+    context *crutch;
 
 protected:
     /**
@@ -76,7 +78,7 @@ protected:
     // void Enter(context& ctx);
 
 public:
-    Engine() : StackBottom(0), cur_routine(nullptr), alive(nullptr) {}
+    Engine() : StackBottom(0), cur_routine(nullptr), alive(nullptr), crutch(new context()) {}
     Engine(Engine &&) = delete;
     Engine(const Engine &) = delete;
 
@@ -120,14 +122,18 @@ public:
 
         if (setjmp(idle_ctx->Environment) > 0) {
             // Here: correct finish of the coroutine section
+            cur_routine = crutch;
             yield();
         } else if (pc != nullptr) {
             Store(*idle_ctx);
-            sched(pc);
+            cur_routine = (context*) pc;
+            Restore(*cur_routine);
         }
 
         // Shutdown runtime
+        delete []std::get<0>(idle_ctx->Stack);
         delete idle_ctx;
+        delete crutch;
         this->StackBottom = 0;
     }
 

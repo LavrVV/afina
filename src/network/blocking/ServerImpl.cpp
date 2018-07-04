@@ -5,6 +5,7 @@
 #include <iostream>
 #include <memory>
 #include <stdexcept>
+#include <condition_variable>
 
 #include <pthread.h>
 #include <signal.h>
@@ -18,6 +19,10 @@
 #include <unistd.h>
 
 #include <afina/Storage.h>
+#include <protocol/Parser.h>
+#include <afina/execute/Command.h>
+
+#define BUF_SIZE 1024
 
 namespace Afina {
 namespace Network {
@@ -29,6 +34,25 @@ void *ServerImpl::RunAcceptorProxy(void *p) {
         srv->RunAcceptor();
     } catch (std::runtime_error &ex) {
         std::cerr << "Server fails: " << ex.what() << std::endl;
+    }
+    return 0;
+}
+
+void *ServerImpl::RunConnectionProxy(void *p){
+    ServerImpl* server;
+    int socket;
+    std::tie(server, socket) = *reinterpret_cast<std::pair<ServerImpl*, int>*>(p);
+    try {
+        server->RunConnection(socket);
+    } catch (std::runtime_error &err) {
+        std::cout << "Connection interrupt: " << err.what() << std::endl;
+        close(socket);
+    }
+    std::cout << "\nDisconnecting\n";
+    {
+        std::lock_guard<std::mutex> lock(server->connections_mutex);
+        server->connections.erase(pthread_self());
+        server->connections_cv.notify_one();
     }
     return 0;
 }
@@ -97,6 +121,9 @@ void ServerImpl::Stop() {
 void ServerImpl::Join() {
     std::cout << "network debug: " << __PRETTY_FUNCTION__ << std::endl;
     pthread_join(accept_thread, 0);
+    for(auto connection : connections){
+        pthread_join(connection, 0);
+    }
 }
 
 // See Server.h
@@ -172,24 +199,143 @@ void ServerImpl::RunAcceptor() {
 
         // TODO: Start new thread and process data from/to connection
         {
-            std::string msg = "TODO: start new thread and process memcached protocol instead";
-            if (send(client_socket, msg.data(), msg.size(), 0) <= 0) {
-                close(client_socket);
-                close(server_socket);
-                throw std::runtime_error("Socket send() failed");
+            std::lock_guard<std::mutex> lock(connections_mutex);
+            if (connections.size() >= max_workers) {
+                std::string msg = "Too many workers\n";
+                if (send(client_socket, msg.data(), msg.size(), 0) <= 0) {
+                    close(client_socket);
+                    std::cout << "Socket send() failed\n";
+                    //close(server_socket);
+                    //throw std::runtime_error("Socket send() failed");
+                }
+                else {
+                    close(client_socket);
+                    std::cout << "User has been disconnected due to workers overflow\n";
+                }
+            } else {
+                pthread_t worker;
+                auto args = std::make_pair(this, client_socket);
+                if (pthread_create(&worker, NULL, ServerImpl::RunConnectionProxy, &args) != 0) {
+                    throw std::runtime_error("Thread create() failed");
+                }
+                connections.insert(worker);
+                std::cout << "\n" << "\nUser " << connections.size()-1 << " connected\n"<< '\n';
             }
-            close(client_socket);
         }
     }
-
+    while(connections.size() > 0){
+        {
+            std::unique_lock<std::mutex> lock(connections_mutex);
+            this->connections_cv.wait(lock);
+        }
+    }
+    
     // Cleanup on exit...
     close(server_socket);
 }
 
 // See Server.h
-void ServerImpl::RunConnection() {
+void ServerImpl::RunConnection(int socket) {
     std::cout << "network debug: " << __PRETTY_FUNCTION__ << std::endl;
     // TODO: All connection work is here
+    Protocol::Parser parser;
+    char buffer[BUF_SIZE+1];
+    std::string out;
+    size_t parsed = 0;
+    size_t curr_pos = 0;
+    ssize_t n_read = 0;
+    bool serv_disconnect = false;
+        //try {
+    if(!running.load()) 
+        return;
+    std::cout << "Start of parsing commands\n";
+    while ((n_read = read(socket, buffer + curr_pos, BUF_SIZE - curr_pos)) > 0 || parsed < curr_pos) {
+    	curr_pos += n_read;
+        bool is_parsed = parser.Parse(buffer, curr_pos, parsed);
+        if (is_parsed) {
+        	size_t body_read = curr_pos - parsed;
+            memcpy(buffer, buffer + parsed, body_read);
+            memset(buffer + body_read, 0, parsed); 
+            curr_pos = body_read;
+            
+            uint32_t body_size;
+            auto cmd = parser.Build(body_size);
+            while (body_size > curr_pos) {
+            	n_read = read(socket, buffer + curr_pos, BUF_SIZE - curr_pos);
+                curr_pos += n_read;
+                if (n_read < 0) {
+                	throw std::runtime_error("\nUser disconnected\n");
+                }
+            }
+            char args[body_size + 1];
+            memcpy(args, buffer, body_size);
+            args[body_size] = '\0';
+            
+            try {
+            	cmd->Execute(*pStorage, args, out);
+                out += "\r\n";
+            } catch (...) {
+            	out = std::string("SERVER_ERROR\r\n");
+            }
+            if (body_size) {
+            	memcpy(buffer, buffer + body_size + 2, curr_pos - body_size - 2);
+                memset(buffer + curr_pos - body_size - 2, 0, body_size);
+                curr_pos -= body_size + 2;
+            }
+            if (send(socket, out.data(), out.size(), 0) <= 0) {
+				throw std::runtime_error("Socket send() failed\n");
+            }
+            parser.Reset();
+        }
+        if (!running.load()) {
+        	serv_disconnect = true;
+			break;
+        }
+    }
+                            
+    if (serv_disconnect) {
+    	while (parsed < curr_pos) {
+        	bool is_parsed = parser.Parse(buffer, curr_pos, parsed);
+            if (is_parsed) {
+            	size_t body_read = curr_pos - parsed;
+                memcpy(buffer, buffer + parsed, body_read);
+                memset(buffer + body_read, 0, parsed); 
+                curr_pos = body_read;
+                                                    
+                uint32_t body_size;
+                auto cmd = parser.Build(body_size);
+                if (body_size > curr_pos){
+                	break;
+                }
+                char args[body_size + 1];
+                memcpy(args, buffer, body_size);
+                args[body_size] = '\0';
+                                                  
+                try {
+                	cmd->Execute(*pStorage, args, out);
+                    out += "\r\n";
+                } catch (...) { 
+                out = std::string("SERVER_ERROR\r\n");
+            }
+            if (body_size) {
+            	memcpy(buffer, buffer + body_size + 2, curr_pos - body_size - 2);
+                memset(buffer + curr_pos - body_size - 2, 0, body_size);
+                curr_pos -= body_size + 2;
+            }
+            if (send(socket, out.data(), out.size(), 0) <= 0) {
+            	throw std::runtime_error("Socket send() failed\n");
+            }
+            parser.Reset();
+                                                    }
+        }
+        out = std::string("SERVER_DISCONNECTING\r\n");
+        if (send(socket, out.data(), out.size(), 0) <= 0) {
+        	throw std::runtime_error("Socket send() failed\n");
+        }
+    }else {
+    	throw std::runtime_error("User disconnected\n");
+	}
+	
 }
 
 } // namespace Blocking
